@@ -703,6 +703,9 @@ pub(crate) struct FlakyObjectStore {
     // get_range: truncate response body to this many bytes on first N attempts (0 = no truncation)
     truncate_get_range_bytes: AtomicUsize,
     truncate_get_range_count: AtomicUsize,
+    // Get: inject HTTP 409 as mapped by object_store S3.
+    fail_first_get_conflict: AtomicUsize,
+    get_conflict_attempts: AtomicUsize,
     // Get: return NotFound on the next N GETs
     fail_first_get_not_found: AtomicUsize,
 }
@@ -730,8 +733,19 @@ impl FlakyObjectStore {
             get_range_attempts: AtomicUsize::new(0),
             truncate_get_range_bytes: AtomicUsize::new(0),
             truncate_get_range_count: AtomicUsize::new(0),
+            fail_first_get_conflict: AtomicUsize::new(0),
+            get_conflict_attempts: AtomicUsize::new(0),
             fail_first_get_not_found: AtomicUsize::new(0),
         }
+    }
+
+    pub(crate) fn with_get_conflicts(self, n: usize) -> Self {
+        self.fail_first_get_conflict.store(n, Ordering::SeqCst);
+        self
+    }
+
+    pub(crate) fn get_conflict_attempts(&self) -> usize {
+        self.get_conflict_attempts.load(Ordering::SeqCst)
     }
 
     pub(crate) fn with_get_not_found_failures(&self, n: usize) {
@@ -863,6 +877,17 @@ impl ObjectStore for FlakyObjectStore {
         location: &Path,
         options: GetOptions,
     ) -> object_store::Result<GetResult> {
+        self.get_conflict_attempts.fetch_add(1, Ordering::SeqCst);
+        if self
+            .fail_first_get_conflict
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+        {
+            return Err(object_store::Error::AlreadyExists {
+                path: location.to_string(),
+                source: std::io::Error::other("injected read conflict").into(),
+            });
+        }
         if self
             .fail_first_get_not_found
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {

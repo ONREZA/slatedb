@@ -120,6 +120,28 @@ impl RetryingObjectStore {
         retry
     }
 
+    /// S3 maps HTTP 409 to AlreadyExists even for side-effect-free reads.
+    /// Preserve explicit terminal errors and the existing retry/backoff bounds.
+    fn should_retry_read(err: &object_store::Error) -> bool {
+        if matches!(err, object_store::Error::AlreadyExists { .. }) {
+            slatedb_common::retry::NonRetryable::find(err).is_none()
+        } else {
+            Self::should_retry(err)
+        }
+    }
+
+    fn notify_read(err: &object_store::Error, duration: Duration) {
+        if matches!(err, object_store::Error::AlreadyExists { .. }) {
+            // Provider error text can contain signed URLs or credentials.
+            info!(
+                "retrying object store read [reason=read_conflict, duration={:?}]",
+                duration
+            );
+        } else {
+            Self::notify(err, duration);
+        }
+    }
+
     /// Checks if a failed put actually succeeded by verifying the ULID in remote metadata.
     ///
     /// When a put operation times out after the file was successfully written,
@@ -369,8 +391,8 @@ impl ObjectStore for RetryingObjectStore {
         })
         .retry(self.retry_builder())
         .sleep(self.sleeper())
-        .notify(Self::notify)
-        .when(Self::should_retry)
+        .notify(Self::notify_read)
+        .when(Self::should_retry_read)
         .await
     }
 
@@ -665,6 +687,54 @@ mod tests {
 
     fn test_clock() -> Arc<DefaultSystemClock> {
         Arc::new(DefaultSystemClock::new())
+    }
+
+    #[test]
+    fn test_read_conflict_preserves_terminal_tag() {
+        let error = object_store::Error::AlreadyExists {
+            path: "data/obj".into(),
+            source: Box::new(NonRetryable(Box::new(std::io::Error::other("terminal")))),
+        };
+        assert!(!RetryingObjectStore::should_retry_read(&error));
+    }
+
+    #[tokio::test]
+    async fn test_read_conflict_retries_full_and_ranges() {
+        for ranged in [false, true] {
+            let inner: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+            let path = Path::from("data/obj");
+            inner
+                .put(&path, Bytes::from_static(b"hello world").into())
+                .await
+                .unwrap();
+            let flaky = Arc::new(FlakyObjectStore::new(inner, 0).with_get_conflicts(2));
+            let retrying =
+                RetryingObjectStore::new(flaky.clone(), test_rand(), test_clock(), Some(3));
+            if ranged {
+                assert_eq!(
+                    retrying.get_ranges(&path, &[0..5, 6..11]).await.unwrap(),
+                    vec![Bytes::from_static(b"hello"), Bytes::from_static(b"world")]
+                );
+            } else {
+                assert_eq!(
+                    retrying.get(&path).await.unwrap().bytes().await.unwrap(),
+                    Bytes::from_static(b"hello world")
+                );
+                assert_eq!(flaky.get_conflict_attempts(), 3);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_read_conflict_exhausts_existing_retry_bound() {
+        let flaky =
+            Arc::new(FlakyObjectStore::new(Arc::new(InMemory::new()), 0).with_get_conflicts(10));
+        let retrying = RetryingObjectStore::new(flaky.clone(), test_rand(), test_clock(), Some(3));
+        assert!(matches!(
+            retrying.get(&Path::from("data/obj")).await,
+            Err(object_store::Error::AlreadyExists { .. })
+        ));
+        assert_eq!(flaky.get_conflict_attempts(), 4);
     }
 
     #[tokio::test]
