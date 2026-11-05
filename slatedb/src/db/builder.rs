@@ -754,12 +754,6 @@ impl<P: Into<Path>> DbBuilder<P> {
 
         // Setup background tasks
         let tokio_handle = Handle::current();
-        task_executor.add_handler(
-            WRITE_BATCH_TASK_NAME.to_string(),
-            Box::new(WriteBatchEventHandler::new(inner.clone(), wal_writer)),
-            write_rx,
-            self.write_runtime.as_ref().unwrap_or(&tokio_handle),
-        )?;
 
         // Selects the store a background component (compactor, GC) reads and
         // writes through, before the component wraps it in its own retry and
@@ -907,17 +901,37 @@ impl<P: Into<Path>> DbBuilder<P> {
             inner.status_manager.as_ref(),
         )?;
 
+        // Register the executor-owning WAL writer after fallible component setup.
+        task_executor.add_handler(
+            WRITE_BATCH_TASK_NAME.to_string(),
+            Box::new(WriteBatchEventHandler::new(inner.clone(), wal_writer)),
+            write_rx,
+            self.write_runtime.as_ref().unwrap_or(&tokio_handle),
+        )?;
+
         // Monitor background tasks
         task_executor.monitor_on(&tokio_handle)?;
 
-        // Replay WAL
-        inner.replay_wal(replay_iterator).await?;
-
-        // Preload cache if enabled
-        if let Some(cached_obj_store) = cached_object_store {
-            inner
-                .preload_cache(&cached_obj_store, &path_resolver)
-                .await?;
+        let recovery: Result<(), SlateDBError> = async {
+            inner.replay_wal(replay_iterator).await?;
+            if let Some(cached_obj_store) = cached_object_store {
+                inner
+                    .preload_cache(&cached_obj_store, &path_resolver)
+                    .await?;
+            }
+            Ok(())
+        }
+        .await;
+        if let Err(error) = recovery {
+            inner.status_manager.write_result(Err(error.clone()));
+            let db = Db {
+                inner,
+                task_executor,
+            };
+            let _ = db
+                .close_with_options(crate::config::CloseOptions::default().with_flush_type(None))
+                .await;
+            return Err(error.into());
         }
 
         // Create and return the Db instance
