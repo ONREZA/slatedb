@@ -1,3 +1,5 @@
+> ONREZA fork: see [fork changes and Cargo setup](FORK.md).
+
 <a href="https://slatedb.io">
   <img src="https://github.com/slatedb/slatedb/blob/main/website/public/img/slatedb-gh-banner.png?raw=true" alt="SlateDB" width="100%">
 </a>
