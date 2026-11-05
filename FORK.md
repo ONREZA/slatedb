@@ -13,6 +13,7 @@ LIST results stream without full buffering, so authorization is checked between 
 Read the API safety requirements before calling it. This API cannot establish retirement authority.
 
 The fork retains upstream schemas, generated Rust files, workspace crates, and license.
+Each storage crate includes an unchanged Apache license copy for Cargo vendor snapshots.
 A patch for a published crate manifest is unnecessary in this source workspace.
 
 ## Use with Cargo
