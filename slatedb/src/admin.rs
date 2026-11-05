@@ -1,3 +1,6 @@
+mod retired_gc;
+pub use retired_gc::{RetiredSstGcOptions, RetiredSstGcResult};
+
 pub use crate::db::builder::CloneBuilder;
 pub use crate::db::builder::CloneSourceSpec;
 use std::collections::BTreeSet;
