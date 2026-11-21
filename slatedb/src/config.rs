@@ -36,7 +36,8 @@
 //!
 //! # Configuration formats
 //!
-//! SlateDB supports three configuration formats: TOML, JSON, and YAML.
+//! SlateDB supports TOML and JSON configuration. YAML requires the `config-yaml`
+//! feature, which is enabled by default.
 //! Duration options in the configuration are represented as human-friendly strings,
 //! allowing you to specify time intervals in a more intuitive way, such as "100ms" or "1s".
 //!
@@ -181,7 +182,9 @@
 use crate::filter_policy::FilterContext;
 use crate::iter::IterationOrder;
 use duration_str::{deserialize_duration, deserialize_option_duration};
-use figment::providers::{Env, Format, Json, Toml, Yaml};
+#[cfg(feature = "config-yaml")]
+use figment::providers::Yaml;
+use figment::providers::{Env, Format, Json, Toml};
 use figment::{Figment, Metadata, Provider};
 use log::warn;
 use serde::{Deserialize, Serialize, Serializer};
@@ -955,7 +958,7 @@ impl Settings {
     /// The file format is determined by its extension:
     /// - ".json" for JSON format
     /// - ".toml" for TOML format
-    /// - ".yaml" or ".yml" for YAML format
+    /// - ".yaml" or ".yml" for YAML format (requires `config-yaml`)
     ///
     /// # Arguments
     ///
@@ -969,7 +972,7 @@ impl Settings {
     /// # Errors
     ///
     /// This function will return an error if:
-    /// - The file extension is not recognized (not json, toml, yaml, or yml).
+    /// - The file extension is not recognized or its format feature is disabled.
     /// - The file cannot be read or parsed according to its presumed format.
     ///
     /// # Examples
@@ -990,6 +993,7 @@ impl Settings {
         match ext.to_str().unwrap_or_default() {
             "json" => builder = builder.merge(Json::file(path)),
             "toml" => builder = builder.merge(Toml::file(path)),
+            #[cfg(feature = "config-yaml")]
             "yaml" | "yml" => builder = builder.merge(Yaml::file(path)),
             _ => return Err(SlateDBError::UnknownConfigurationFormat(path.into()).into()),
         }
@@ -1074,7 +1078,7 @@ impl Settings {
     /// 1. Default options
     /// 2. JSON file ("SlateDb.json")
     /// 3. TOML file ("SlateDb.toml")
-    /// 4. YAML files ("SlateDb.yaml" and "SlateDb.yml")
+    /// 4. YAML files ("SlateDb.yaml" and "SlateDb.yml"), with `config-yaml` enabled
     /// 5. Environment variables prefixed with "SLATEDB_"
     ///
     /// Each subsequent source overrides the values from the previous sources if they exist.
@@ -1092,11 +1096,14 @@ impl Settings {
     /// let config = Settings::load().expect("Failed to load options");
     /// ```
     pub fn load() -> Result<Settings, crate::Error> {
-        Figment::from(Settings::default())
+        let builder = Figment::from(Settings::default())
             .merge(Json::file("SlateDb.json"))
-            .merge(Toml::file("SlateDb.toml"))
+            .merge(Toml::file("SlateDb.toml"));
+        #[cfg(feature = "config-yaml")]
+        let builder = builder
             .merge(Yaml::file("SlateDb.yaml"))
-            .merge(Yaml::file("SlateDb.yml"))
+            .merge(Yaml::file("SlateDb.yml"));
+        builder
             .admerge(Env::prefixed("SLATEDB_"))
             .extract()
             .map_err(|e| SlateDBError::InvalidConfigurationFormat(Box::new(e)).into())
@@ -2136,6 +2143,7 @@ root_folder = "/tmp/slatedb-root"
         });
     }
 
+    #[cfg(feature = "config-yaml")]
     #[test]
     #[allow(deprecated)] // `object_store_cache_options` is deprecated.
     fn test_db_options_load_from_yaml_file() {
@@ -2163,6 +2171,7 @@ object_store_cache_options:
         });
     }
 
+    #[cfg(feature = "config-yaml")]
     #[test]
     #[allow(deprecated)] // `object_store_cache_options` is deprecated.
     fn test_db_options_load_with_default_locations() {
@@ -2184,6 +2193,20 @@ object_store_cache_options:
                 Some(PathBuf::from("/tmp/slatedb-root")),
                 options.object_store_cache_options.root_folder
             );
+            Ok(())
+        });
+    }
+
+    #[cfg(not(feature = "config-yaml"))]
+    #[test]
+    fn test_db_options_without_yaml() {
+        figment::Jail::expect_with(|jail| {
+            jail.create_file("config.yaml", "flush_interval: 2s")?;
+            assert!(Settings::from_file("config.yaml").is_err());
+            jail.create_file("SlateDb.yaml", "invalid: [")?;
+            jail.set_env("SLATEDB_FLUSH_INTERVAL", "1s");
+            let options = Settings::load().expect("YAML should not be loaded");
+            assert_eq!(Some(Duration::from_secs(1)), options.flush_interval);
             Ok(())
         });
     }

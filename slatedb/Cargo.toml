@@ -25,7 +25,7 @@ duration-str = { workspace = true, features = [
     "time",
 ], default-features = false }
 fail-parallel = { workspace = true }
-figment = { workspace = true, features = ["env", "json", "toml", "yaml"] }
+figment = { workspace = true, features = ["env", "json", "toml"] }
 flate2 = { workspace = true, optional = true }
 flatbuffers = { workspace = true }
 foyer = { workspace = true, features = ["serde"], optional = true }
@@ -90,7 +90,8 @@ tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
 pprof = { workspace = true, features = ["criterion", "protobuf-codec"] }
 
 [features]
-default = ["aws", "foyer"]
+default = ["aws", "foyer", "config-yaml"]
+config-yaml = ["figment/yaml"]
 aws = ["object_store/aws"]
 azure = ["object_store/azure"]
 bencher = ["aws", "azure", "wal_disable", "foyer"]
@@ -110,6 +111,7 @@ test-util = [
     "slatedb-txn-obj/test-util",
 ]
 all = [
+    "config-yaml",
     "aws",
     "azure",
     "compression",
